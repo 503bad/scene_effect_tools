@@ -1,0 +1,112 @@
+/* Glitch: time-triggered horizontal slice displacement, RGB/chroma shift,
+ * scanlines, colour overlay and an additive bloom (bright parts only).
+ * BrightPass + host blur feed the bloom; Combine assembles everything. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d bloom_tex;
+
+uniform float  strength;        /* 0..1 mix with original */
+uniform float  frequency;       /* 0..1 glitch trigger rate */
+uniform float  intensity;       /* 0..1 disruption scale */
+uniform float  chroma_shift;    /* 0..1 */
+uniform float  slice_amount;    /* 0..1 */
+uniform float  bloom_intensity; /* 0..2 */
+uniform float  bloom_threshold; /* 0..1 */
+uniform float  scanline;        /* 0..1 */
+uniform float4 overlay_color;
+uniform float  overlay_amount;  /* 0..1 */
+uniform float  time;
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float hash11(float x)
+{
+	return frac(sin(x * 12.9898) * 43758.5453);
+}
+
+float hash21(float2 p)
+{
+	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float4 PSBright(VertData v) : TARGET
+{
+	float4 c = image.Sample(def_sampler, v.uv);
+	float luma = dot(c.rgb, float3(0.299, 0.587, 0.114));
+	float b = smoothstep(bloom_threshold, bloom_threshold + 0.2, luma);
+	return float4(c.rgb * b, 1.0);
+}
+
+float4 PSCombine(VertData v) : TARGET
+{
+	float4 src = image.Sample(def_sampler, v.uv);
+
+	/* Per-frame trigger: is the screen glitching right now? */
+	float frame = floor(time * 18.0);
+	float active = step(1.0 - frequency, hash11(frame));
+	float amt = intensity * active;
+
+	/* Horizontal slice displacement. */
+	float band = floor(v.uv.y * 24.0);
+	float sh = (hash21(float2(band, frame)) - 0.5) * slice_amount * amt * 0.2;
+	float2 uv = v.uv;
+	uv.x += sh;
+
+	/* RGB / chroma shift. */
+	float cs = chroma_shift * (0.004 + amt * 0.02);
+	float r = image.Sample(def_sampler, uv + float2(cs, 0.0)).r;
+	float g = image.Sample(def_sampler, uv).g;
+	float b = image.Sample(def_sampler, uv - float2(cs, 0.0)).b;
+	float3 col = float3(r, g, b);
+
+	/* Additive bloom (bright regions only). */
+	col += bloom_tex.Sample(def_sampler, v.uv).rgb * bloom_intensity;
+
+	/* Scanlines. */
+	float sl = 0.5 + 0.5 * sin(v.uv.y * uv_size.y * 3.14159);
+	col *= 1.0 - scanline * 0.5 * (1.0 - sl);
+
+	/* Colour overlay (screen blend), stronger during a glitch. */
+	float ov = overlay_amount * (0.6 + 0.4 * active);
+	col = lerp(col, 1.0 - (1.0 - col) * (1.0 - overlay_color.rgb), ov);
+
+	float3 outc = lerp(src.rgb, saturate(col), strength);
+	return float4(outc, src.a);
+}
+
+technique BrightPass
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSBright(v);
+	}
+}
+
+technique Combine
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSCombine(v);
+	}
+}

@@ -1,0 +1,6 @@
+{
+  "name": "screen-effect-tools",
+  "version-string": "0.1.0",
+  "description": "Screen Effect Tools - OBS video filter plugin: cartoon, sepia, old film, VHS, pixel art, bloom, focus, crunch, instagram grade, glitch",
+  "dependencies": []
+}

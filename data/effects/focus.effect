@@ -1,0 +1,66 @@
+/* Focus (depth-of-field): lerp between the sharp input and a pre-blurred copy
+ * by a radial mask whose falloff curve is adjustable. Single composite pass;
+ * the blur is produced host-side with the shared blur.effect. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d blur_tex;
+
+uniform float  strength;     /* 0..1 mix with original */
+uniform float2 center;       /* 0..1 focus point */
+uniform float  inner_radius; /* 0..1 sharp radius */
+uniform float  falloff;      /* 0..1 transition width */
+uniform float  curve;        /* 0.2..5 */
+uniform float  max_blur;     /* 0..1 */
+uniform float  shape;        /* 0 circle, 1 ellipse */
+uniform float  aspect;       /* ellipse ratio */
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float4 PSFocus(VertData v) : TARGET
+{
+	float4 sharp = image.Sample(def_sampler, v.uv);
+	float4 blur = blur_tex.Sample(def_sampler, v.uv);
+
+	/* Distance from the focus point, in a roughly square space. */
+	float canvas_aspect = uv_size.x / max(uv_size.y, 1.0);
+	float2 d = v.uv - center;
+	d.x *= canvas_aspect;
+	if (shape > 0.5)
+		d.x /= max(aspect, 0.01);
+
+	float dist = length(d);
+	float t = saturate((dist - inner_radius) / max(falloff, 0.001));
+	float amount = pow(t, curve) * max_blur;
+
+	float3 col = lerp(sharp.rgb, blur.rgb, saturate(amount));
+	float3 outc = lerp(sharp.rgb, col, strength);
+	return float4(outc, sharp.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSFocus(v);
+	}
+}

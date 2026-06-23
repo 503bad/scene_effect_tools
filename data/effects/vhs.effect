@@ -1,0 +1,102 @@
+/* VHS: chroma bleed, tape noise, scanlines, a drifting tracking-noise band,
+ * occasional horizontal slice glitches and desaturation. Single pass with a
+ * `time` uniform. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;         /* 0..1 mix with original */
+uniform float  chroma_bleed;     /* 0..1 */
+uniform float  noise;            /* 0..1 */
+uniform float  scanline;         /* 0..1 */
+uniform float  tracking_amount;  /* 0..1 */
+uniform float  tracking_speed;   /* 0..1 */
+uniform float  glitch_freq;      /* 0..1 */
+uniform float  glitch_intensity; /* 0..1 */
+uniform float  desaturate;       /* 0..1 */
+uniform float  time;
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float hash11(float x)
+{
+	return frac(sin(x * 12.9898) * 43758.5453);
+}
+
+float hash21(float2 p)
+{
+	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float4 PSVhs(VertData v) : TARGET
+{
+	float2 uv = v.uv;
+	float row = floor(uv.y * uv_size.y);
+
+	/* Tracking band: a horizontal strip that drifts vertically. */
+	float band_pos = frac(time * tracking_speed * 0.3);
+	float band = smoothstep(0.06, 0.0, abs(frac(uv.y - band_pos) - 0.0)) *
+		     tracking_amount;
+	band += smoothstep(0.04, 0.0, abs(frac(uv.y - band_pos) - 1.0)) *
+		tracking_amount;
+
+	/* Occasional slice glitch: shift whole rows left/right. */
+	float gtrig = step(1.0 - glitch_freq * 0.5,
+			   hash11(floor(time * 12.0) + floor(uv.y * 18.0)));
+	float slice = (hash21(float2(row, floor(time * 12.0))) - 0.5) *
+		      glitch_intensity * gtrig;
+
+	float xshift = slice * 0.1 + band * (hash11(row + time) - 0.5) * 0.15;
+	uv.x += xshift;
+
+	/* Chroma bleed: sample R/B horizontally offset from G. */
+	float off = chroma_bleed * 0.006 + band * 0.01;
+	float r = image.Sample(def_sampler, uv + float2(off, 0.0)).r;
+	float g = image.Sample(def_sampler, uv).g;
+	float b = image.Sample(def_sampler, uv - float2(off, 0.0)).b;
+	float a = image.Sample(def_sampler, uv).a;
+	float3 col = float3(r, g, b);
+
+	/* Tape noise, stronger inside the tracking band. */
+	float n = hash21(uv * uv_size + frac(time) * 53.1) - 0.5;
+	col += n * (noise * 0.25 + band * 0.6);
+
+	/* Scanlines. */
+	float sl = 0.5 + 0.5 * sin(uv.y * uv_size.y * 3.14159);
+	col *= 1.0 - scanline * 0.5 * (1.0 - sl);
+
+	/* Desaturation. */
+	float luma = dot(col, float3(0.299, 0.587, 0.114));
+	col = lerp(col, float3(luma, luma, luma), desaturate);
+
+	float4 src = image.Sample(def_sampler, v.uv);
+	float3 outc = lerp(src.rgb, saturate(col), strength);
+	return float4(outc, src.a > 0.0 ? src.a : a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSVhs(v);
+	}
+}

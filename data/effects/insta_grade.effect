@@ -1,0 +1,101 @@
+/* Instagram-style grade: white balance, lifted blacks (fade), split-tone,
+ * contrast, saturation + vibrance, vignette and film grain. Single pass.
+ * Presets are applied host-side by writing the parametric values. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;        /* 0..1 mix with original */
+uniform float  temperature;     /* -1..1 */
+uniform float  tint;            /* -1..1 */
+uniform float  saturation;      /* -1..1 */
+uniform float  vibrance;        /* -1..1 */
+uniform float  contrast;        /* -1..1 */
+uniform float  fade;            /* 0..1 lift blacks */
+uniform float4 highlight_color; /* split-tone highlight */
+uniform float4 shadow_color;    /* split-tone shadow */
+uniform float  vignette;        /* 0..1 */
+uniform float  grain;           /* 0..1 */
+uniform float  time;
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float hash21(float2 p)
+{
+	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float4 PSGrade(VertData v) : TARGET
+{
+	float4 src = image.Sample(def_sampler, v.uv);
+	float3 col = src.rgb;
+
+	/* --- white balance --- */
+	col.r += temperature * 0.12;
+	col.b -= temperature * 0.12;
+	col.g += tint * 0.10;
+	col = saturate(col);
+
+	/* --- fade / lifted blacks (matte) --- */
+	col = lerp(col, col * (1.0 - fade) + fade * 0.18, 1.0);
+
+	/* --- contrast around mid grey --- */
+	col = saturate((col - 0.5) * (1.0 + contrast) + 0.5);
+
+	/* --- split tone: shadows vs highlights by luma --- */
+	float luma = dot(col, float3(0.299, 0.587, 0.114));
+	float3 shTint = shadow_color.rgb * 2.0 - 1.0;
+	float3 hiTint = highlight_color.rgb * 2.0 - 1.0;
+	col += shTint * (1.0 - smoothstep(0.0, 0.5, luma)) * 0.18;
+	col += hiTint * smoothstep(0.5, 1.0, luma) * 0.18;
+	col = saturate(col);
+
+	/* --- saturation + vibrance --- */
+	luma = dot(col, float3(0.299, 0.587, 0.114));
+	col = lerp(float3(luma, luma, luma), col, 1.0 + saturation);
+	float mx = max(col.r, max(col.g, col.b));
+	float mn = min(col.r, min(col.g, col.b));
+	float sat = mx - mn;
+	col = lerp(float3(luma, luma, luma), col, 1.0 + vibrance * (1.0 - sat));
+	col = saturate(col);
+
+	/* --- vignette --- */
+	float2 d = v.uv - 0.5;
+	col *= 1.0 - vignette * saturate(dot(d, d) * 2.2);
+
+	/* --- grain --- */
+	if (grain > 0.0) {
+		float n = hash21(v.uv * uv_size + frac(time) * 91.7) - 0.5;
+		col += n * grain * 0.18;
+	}
+
+	float3 outc = lerp(src.rgb, saturate(col), strength);
+	return float4(outc, src.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSGrade(v);
+	}
+}

@@ -1,0 +1,49 @@
+/* Shared separable Gaussian blur. The host calls technique Draw twice per
+ * iteration with `dir` set to (1/w,0) then (0,1/h). 9-tap kernel. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 dir; /* texel step along the blur axis */
+
+sampler_state blurSampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float4 PSBlur(VertData v) : TARGET
+{
+	/* Normalized 9-tap Gaussian (sigma ~2). */
+	float4 c = image.Sample(blurSampler, v.uv) * 0.227027;
+	c += image.Sample(blurSampler, v.uv + dir * 1.0) * 0.1945946;
+	c += image.Sample(blurSampler, v.uv - dir * 1.0) * 0.1945946;
+	c += image.Sample(blurSampler, v.uv + dir * 2.0) * 0.1216216;
+	c += image.Sample(blurSampler, v.uv - dir * 2.0) * 0.1216216;
+	c += image.Sample(blurSampler, v.uv + dir * 3.0) * 0.054054;
+	c += image.Sample(blurSampler, v.uv - dir * 3.0) * 0.054054;
+	c += image.Sample(blurSampler, v.uv + dir * 4.0) * 0.016216;
+	c += image.Sample(blurSampler, v.uv - dir * 4.0) * 0.016216;
+	return c;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSBlur(v);
+	}
+}

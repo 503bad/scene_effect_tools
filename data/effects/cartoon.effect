@@ -1,0 +1,98 @@
+/* Cartoon: optional smoothing, posterization (colour quantization), Sobel edge
+ * outline and saturation boost. Single pass. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;      /* 0..1 mix with original */
+uniform float  edge_strength; /* 0..1 */
+uniform float  edge_width;    /* px, 0.5..4 */
+uniform float  color_levels;  /* 2..32 */
+uniform float  smoothing;     /* 0..1 */
+uniform float  saturation;    /* -0.5..1 */
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float3 sample_smoothed(float2 uv, float2 texel)
+{
+	/* 3x3 box blur scaled by the smoothing amount. */
+	float2 r = texel * (0.5 + smoothing * 2.0);
+	float3 c = image.Sample(def_sampler, uv).rgb * 4.0;
+	c += image.Sample(def_sampler, uv + float2(r.x, 0.0)).rgb * 2.0;
+	c += image.Sample(def_sampler, uv - float2(r.x, 0.0)).rgb * 2.0;
+	c += image.Sample(def_sampler, uv + float2(0.0, r.y)).rgb * 2.0;
+	c += image.Sample(def_sampler, uv - float2(0.0, r.y)).rgb * 2.0;
+	c += image.Sample(def_sampler, uv + r).rgb;
+	c += image.Sample(def_sampler, uv - r).rgb;
+	c += image.Sample(def_sampler, uv + float2(r.x, -r.y)).rgb;
+	c += image.Sample(def_sampler, uv + float2(-r.x, r.y)).rgb;
+	return c / 16.0;
+}
+
+float luma_at(float2 uv)
+{
+	return dot(image.Sample(def_sampler, uv).rgb,
+		   float3(0.299, 0.587, 0.114));
+}
+
+float4 PSCartoon(VertData v) : TARGET
+{
+	float4 src = image.Sample(def_sampler, v.uv);
+	float2 texel = edge_width / max(uv_size, float2(1.0, 1.0));
+
+	/* --- smoothed base + posterize --- */
+	float3 col = sample_smoothed(v.uv, texel);
+	float levels = max(color_levels, 2.0);
+	col = floor(col * levels + 0.5) / levels;
+
+	/* --- saturation boost --- */
+	float l = dot(col, float3(0.299, 0.587, 0.114));
+	col = saturate(lerp(float3(l, l, l), col, 1.0 + saturation));
+
+	/* --- Sobel edge detection on luma --- */
+	float tl = luma_at(v.uv + float2(-texel.x,  texel.y));
+	float  t = luma_at(v.uv + float2(0.0,       texel.y));
+	float tr = luma_at(v.uv + float2( texel.x,  texel.y));
+	float  l2 = luma_at(v.uv + float2(-texel.x, 0.0));
+	float  r = luma_at(v.uv + float2( texel.x,  0.0));
+	float bl = luma_at(v.uv + float2(-texel.x, -texel.y));
+	float  b = luma_at(v.uv + float2(0.0,      -texel.y));
+	float br = luma_at(v.uv + float2( texel.x, -texel.y));
+
+	float gx = -tl - 2.0 * l2 - bl + tr + 2.0 * r + br;
+	float gy =  tl + 2.0 * t  + tr - bl - 2.0 * b - br;
+	float edge = sqrt(gx * gx + gy * gy);
+	float outline = saturate(smoothstep(0.4, 1.2, edge) * edge_strength * 2.0);
+
+	col = lerp(col, float3(0.0, 0.0, 0.0), outline);
+
+	float3 outc = lerp(src.rgb, col, strength);
+	return float4(outc, src.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSCartoon(v);
+	}
+}

@@ -1,0 +1,59 @@
+/* Sepia: luminance mapped onto a shadow->highlight tone gradient, with
+ * optional contrast and vignette. Single pass. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;    /* 0..1 mix with original */
+uniform float4 tone_color;  /* sepia base tone (rgba) */
+uniform float  contrast;    /* -0.5..0.5 */
+uniform float  vignette;    /* 0..1 */
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float4 PSSepia(VertData v) : TARGET
+{
+	float4 c = image.Sample(def_sampler, v.uv);
+
+	float luma = dot(c.rgb, float3(0.299, 0.587, 0.114));
+	luma = saturate((luma - 0.5) * (1.0 + contrast) + 0.5);
+
+	float3 hi = saturate(tone_color.rgb * 2.6);
+	float3 lo = tone_color.rgb * 0.35;
+	float3 sep = lerp(lo, hi, smoothstep(0.0, 1.0, luma));
+
+	/* Vignette darkens toward the corners. */
+	float2 d = v.uv - 0.5;
+	float vig = 1.0 - vignette * saturate(dot(d, d) * 2.2);
+	sep *= vig;
+
+	float3 outc = lerp(c.rgb, sep, strength);
+	return float4(outc, c.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSSepia(v);
+	}
+}

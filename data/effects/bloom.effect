@@ -1,0 +1,66 @@
+/* Bloom: BrightPass extracts the bright regions (threshold + soft knee); the
+ * host blurs that with the shared blur.effect; Combine adds the blurred glow
+ * back over the original. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d bloom_tex;
+
+uniform float  threshold; /* 0..1 */
+uniform float  knee;      /* 0..1 */
+uniform float  intensity; /* 0..2 */
+uniform float4 tint;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float4 PSBright(VertData v) : TARGET
+{
+	float4 c = image.Sample(def_sampler, v.uv);
+	float luma = dot(c.rgb, float3(0.299, 0.587, 0.114));
+	float k = max(knee, 0.001);
+	float b = smoothstep(threshold, threshold + k, luma);
+	return float4(c.rgb * b, 1.0);
+}
+
+float4 PSCombine(VertData v) : TARGET
+{
+	float4 base = image.Sample(def_sampler, v.uv);
+	float3 glow = bloom_tex.Sample(def_sampler, v.uv).rgb;
+	float3 outc = base.rgb + glow * tint.rgb * intensity;
+	return float4(outc, base.a);
+}
+
+technique BrightPass
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSBright(v);
+	}
+}
+
+technique Combine
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSCombine(v);
+	}
+}

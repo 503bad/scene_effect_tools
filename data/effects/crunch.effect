@@ -1,0 +1,132 @@
+/* Crunch: low-bitrate video look. Approximates per-block DCT compression in a
+ * fragment shader (a true DCT wants a compute shader, so this fuses the key
+ * artifacts):
+ *   - blocking      : each 8x8-ish block shares a quantized DC (block mean);
+ *                     AC (detail) is attenuated + quantized as compression rises
+ *                     so blocks flatten and stop agreeing at their edges.
+ *   - mosquito/ring : busy blocks get an in-block oscillation (Gibbs overshoot).
+ *   - chroma smear  : chroma is taken from a coarser shared block (4:2:0-ish)
+ *                     while luma stays per-pixel.
+ *   - banding       : final colour-depth reduction.
+ * Refs: strayspark.studio "compression artifacts / DCT", Wikipedia
+ * "Compression artifact" / "Chroma subsampling". */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;         /* 0..1 mix with original */
+uniform float  downscale;        /* 0..1 */
+uniform float  block_size;       /* px, 2..32 (DCT block) */
+uniform float  compression;      /* 0..1 */
+uniform float  color_depth;      /* 2..8 bits */
+uniform float  chroma_subsample; /* 0..1 */
+uniform float  block_noise;      /* 0..1 mosquito noise */
+uniform float2 uv_size;
+
+sampler_state lin_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float3 rgb2ycc(float3 c)
+{
+	float y = dot(c, float3(0.299, 0.587, 0.114));
+	float cb = (c.b - y) * 0.564 + 0.5;
+	float cr = (c.r - y) * 0.713 + 0.5;
+	return float3(y, cb, cr);
+}
+
+float3 ycc2rgb(float3 c)
+{
+	float y = c.x, cb = c.y - 0.5, cr = c.z - 0.5;
+	return float3(y + 1.402 * cr,
+		      y - 0.344 * cb - 0.714 * cr,
+		      y + 1.772 * cb);
+}
+
+/* Mean of a 4x4 fixed grid inside the block at `origin_px` of side `sz` px.
+ * Depends only on the block origin, so every pixel in a block gets the same
+ * value -> a real, block-shared DC term. */
+float3 block_mean(float2 origin_px, float sz)
+{
+	float3 acc = float3(0.0, 0.0, 0.0);
+	float cellstep = sz / 4.0;
+	for (int j = 0; j < 4; j++) {
+		for (int i = 0; i < 4; i++) {
+			float2 sp = (origin_px +
+				     (float2((float)i, (float)j) + 0.5) * cellstep) /
+				    max(uv_size, float2(1.0, 1.0));
+			acc += image.Sample(lin_sampler, sp).rgb;
+		}
+	}
+	return acc / 16.0;
+}
+
+float4 PSCrunch(VertData v) : TARGET
+{
+	float4 src = image.Sample(lin_sampler, v.uv);
+	float2 px = v.uv * uv_size;
+
+	/* Resolution reduction: snap the per-pixel sample to a coarse grid. */
+	float dpx = lerp(1.0, 12.0, downscale);
+	float2 dcell = dpx / max(uv_size, float2(1.0, 1.0));
+	float2 duv = (floor(v.uv / dcell) + 0.5) * dcell;
+	float3 local = image.Sample(lin_sampler, duv).rgb;
+
+	/* DCT-block approximation: block-shared DC + attenuated/quantized AC. */
+	float N = clamp(block_size, 2.0, 32.0);
+	float2 b0 = floor(px / N) * N;
+	float3 dc = block_mean(b0, N);
+	float3 ac = local - dc;
+
+	float keep = saturate(1.0 - compression * 0.95); /* drop high freqs */
+	ac *= keep;
+	float q = lerp(40.0, 4.0, compression);          /* coeff quantization */
+	ac = floor(ac * q + 0.5) / q;
+	float3 col = dc + ac;
+
+	/* Mosquito / ringing: in-block oscillation scaled by local edge energy. */
+	float edge = saturate(length(local - dc) * 3.0);
+	float2 inb = (px - b0) / N;
+	float ring = sin(inb.x * 25.13) * sin(inb.y * 25.13);
+	col += ring * edge * compression * block_noise * 0.5;
+
+	/* Chroma subsampling: chroma from a coarser shared block, luma per-pixel. */
+	float3 ycc = rgb2ycc(col);
+	float cN = N * lerp(1.0, 3.0, chroma_subsample);
+	float2 cb0 = floor(px / cN) * cN;
+	float3 cdc = block_mean(cb0, cN);
+	float3 cycc = rgb2ycc(cdc);
+	ycc.yz = lerp(ycc.yz, cycc.yz, chroma_subsample);
+	col = ycc2rgb(ycc);
+
+	/* Colour-depth banding. */
+	float clev = pow(2.0, color_depth) - 1.0;
+	col = floor(col * clev + 0.5) / clev;
+
+	float3 outc = lerp(src.rgb, saturate(col), strength);
+	return float4(outc, src.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSCrunch(v);
+	}
+}

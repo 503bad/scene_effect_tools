@@ -1,0 +1,181 @@
+/* Pixel art: mosaic snap, then either full colour, a 256-colour (R3G3B2)
+ * quantization, or a fixed 16/4/2-colour palette with ordered (Bayer)
+ * dithering. Single pass. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;         /* 0..1 mix with original */
+uniform float  pixel_size;       /* px, 1..64 */
+uniform int    color_count;      /* 0 = full, 256, 16 */
+uniform int    palette;          /* palette id (16-colour mode) */
+uniform int    palette_count;    /* entries in the active palette */
+uniform float  dither_threshold; /* 0..1 */
+uniform float  dither_strength;  /* 0..1 */
+uniform float2 uv_size;
+
+sampler_state pixSampler {
+	Filter   = Point;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+/* 4x4 ordered-dither threshold (0..1) for integer cell coords. */
+float bayer4(float2 c)
+{
+	float2 m = floor(fmod(abs(c), 4.0));
+	float idx = m.y * 4.0 + m.x;
+	float v = 0.0;
+	if (idx < 0.5)       v = 0.0;
+	else if (idx < 1.5)  v = 8.0;
+	else if (idx < 2.5)  v = 2.0;
+	else if (idx < 3.5)  v = 10.0;
+	else if (idx < 4.5)  v = 12.0;
+	else if (idx < 5.5)  v = 4.0;
+	else if (idx < 6.5)  v = 14.0;
+	else if (idx < 7.5)  v = 6.0;
+	else if (idx < 8.5)  v = 3.0;
+	else if (idx < 9.5)  v = 11.0;
+	else if (idx < 10.5) v = 1.0;
+	else if (idx < 11.5) v = 9.0;
+	else if (idx < 12.5) v = 15.0;
+	else if (idx < 13.5) v = 7.0;
+	else if (idx < 14.5) v = 13.0;
+	else                 v = 5.0;
+	return (v + 0.5) / 16.0;
+}
+
+/* Palette colour for the active palette / index. GL-safe (no array literals). */
+float3 pal_lookup(int i)
+{
+	float3 c = float3(0.0, 0.0, 0.0);
+	if (palette == 1) {
+		/* Game Boy (4 greens) */
+		if (i == 0)      c = float3(0.059, 0.220, 0.059);
+		else if (i == 1) c = float3(0.188, 0.384, 0.188);
+		else if (i == 2) c = float3(0.545, 0.675, 0.059);
+		else             c = float3(0.608, 0.737, 0.059);
+	} else if (palette == 3) {
+		/* Monochrome (2 colours) */
+		c = (i == 0) ? float3(0.0, 0.0, 0.0) : float3(1.0, 1.0, 1.0);
+	} else if (palette == 2) {
+		/* PC-98 style saturated 16 */
+		if (i == 0)       c = float3(0.0, 0.0, 0.0);
+		else if (i == 1)  c = float3(0.0, 0.0, 0.5);
+		else if (i == 2)  c = float3(0.5, 0.0, 0.0);
+		else if (i == 3)  c = float3(0.5, 0.0, 0.5);
+		else if (i == 4)  c = float3(0.0, 0.5, 0.0);
+		else if (i == 5)  c = float3(0.0, 0.5, 0.5);
+		else if (i == 6)  c = float3(0.5, 0.5, 0.0);
+		else if (i == 7)  c = float3(0.75, 0.75, 0.75);
+		else if (i == 8)  c = float3(0.3, 0.3, 0.3);
+		else if (i == 9)  c = float3(0.2, 0.2, 1.0);
+		else if (i == 10) c = float3(1.0, 0.2, 0.2);
+		else if (i == 11) c = float3(1.0, 0.2, 1.0);
+		else if (i == 12) c = float3(0.2, 1.0, 0.2);
+		else if (i == 13) c = float3(0.2, 1.0, 1.0);
+		else if (i == 14) c = float3(1.0, 1.0, 0.2);
+		else              c = float3(1.0, 1.0, 1.0);
+	} else {
+		/* Classic 16 (EGA) */
+		if (i == 0)       c = float3(0.0, 0.0, 0.0);
+		else if (i == 1)  c = float3(0.0, 0.0, 0.667);
+		else if (i == 2)  c = float3(0.0, 0.667, 0.0);
+		else if (i == 3)  c = float3(0.0, 0.667, 0.667);
+		else if (i == 4)  c = float3(0.667, 0.0, 0.0);
+		else if (i == 5)  c = float3(0.667, 0.0, 0.667);
+		else if (i == 6)  c = float3(0.667, 0.333, 0.0);
+		else if (i == 7)  c = float3(0.667, 0.667, 0.667);
+		else if (i == 8)  c = float3(0.333, 0.333, 0.333);
+		else if (i == 9)  c = float3(0.333, 0.333, 1.0);
+		else if (i == 10) c = float3(0.333, 1.0, 0.333);
+		else if (i == 11) c = float3(0.333, 1.0, 1.0);
+		else if (i == 12) c = float3(1.0, 0.333, 0.333);
+		else if (i == 13) c = float3(1.0, 0.333, 1.0);
+		else if (i == 14) c = float3(1.0, 1.0, 0.333);
+		else              c = float3(1.0, 1.0, 1.0);
+	}
+	return c;
+}
+
+/* Per-channel quantization to `lv` levels with ordered (Bayer) dithering. */
+float3 ordered_quant(float3 col, float3 lv, float2 cellIdx)
+{
+	float b = bayer4(cellIdx) - 0.5;
+	float3 stepv = 1.0 / max(lv - 1.0, float3(1.0, 1.0, 1.0));
+	col += b * stepv * dither_strength;
+	return saturate(floor(col * (lv - 1.0) + 0.5) /
+			max(lv - 1.0, float3(1.0, 1.0, 1.0)));
+}
+
+float3 nearest_palette(float3 col)
+{
+	float bestd = 1e9;
+	float3 best = col;
+	for (int i = 0; i < palette_count; i++) {
+		float3 pc = pal_lookup(i);
+		float3 e = col - pc;
+		float d = dot(e, e);
+		if (d < bestd) {
+			bestd = d;
+			best = pc;
+		}
+	}
+	return best;
+}
+
+float4 PSPixelArt(VertData v) : TARGET
+{
+	/* Snap UV to the centre of each pixel cell. */
+	float2 cell = max(pixel_size, 1.0) / max(uv_size, float2(1.0, 1.0));
+	float2 cellIdx = floor(v.uv / cell);
+	float2 suv = (cellIdx + 0.5) * cell;
+
+	float4 src = image.Sample(pixSampler, v.uv);
+	float3 col = image.Sample(pixSampler, suv).rgb;
+
+	float3 outc = col;
+	if (color_count == 256) {
+		/* R3 G3 B2 = 256, ordered-dithered */
+		outc = ordered_quant(col, float3(8.0, 8.0, 4.0), cellIdx);
+	} else if (color_count == 32) {
+		/* R2 G2 B1 = 32, ordered-dithered */
+		outc = ordered_quant(col, float3(4.0, 4.0, 2.0), cellIdx);
+	} else if (color_count == 16) {
+		float3 plain = nearest_palette(col);
+		float err = distance(col, plain);
+		if (dither_strength > 0.0 && err > dither_threshold) {
+			float b = bayer4(cellIdx);
+			float3 biased = saturate(
+				col + (b - 0.5) * dither_strength * 0.6);
+			outc = nearest_palette(biased);
+		} else {
+			outc = plain;
+		}
+	}
+
+	float3 res = lerp(src.rgb, outc, strength);
+	return float4(res, src.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSPixelArt(v);
+	}
+}

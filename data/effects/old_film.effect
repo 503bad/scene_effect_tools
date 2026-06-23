@@ -1,0 +1,105 @@
+/* Old film: sepia base, animated grain, drifting vertical scratches,
+ * projector flicker, vignette and frame jitter. Single pass with a `time`
+ * uniform driving the animation. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float  strength;          /* 0..1 mix with original */
+uniform float  sepia_amount;      /* 0..1 */
+uniform float  grain;             /* 0..1 */
+uniform float  flicker;           /* 0..1 */
+uniform float  scratch_count;     /* 0..12 */
+uniform float  scratch_speed;     /* 0..1 */
+uniform float  scratch_intensity; /* 0..1 */
+uniform float  vignette;          /* 0..1 */
+uniform float  jitter;            /* 0..1 */
+uniform float  time;
+uniform float2 uv_size;
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float hash11(float x)
+{
+	return frac(sin(x * 12.9898) * 43758.5453);
+}
+
+float hash21(float2 p)
+{
+	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float4 PSOldFilm(VertData v) : TARGET
+{
+	/* Frame jitter: tiny per-frame offset. */
+	float fseed = floor(time * 24.0);
+	float2 jit = (float2(hash11(fseed), hash11(fseed + 7.3)) - 0.5) *
+		     jitter * 0.012;
+	float2 uv = v.uv + jit;
+
+	float4 src = image.Sample(def_sampler, uv);
+	float3 col = src.rgb;
+
+	/* Sepia base. */
+	float luma = dot(col, float3(0.299, 0.587, 0.114));
+	float3 sep = lerp(float3(0.15, 0.09, 0.03),
+			  float3(1.0, 0.78, 0.45), smoothstep(0.0, 1.0, luma));
+	col = lerp(col, sep, sepia_amount);
+
+	/* Projector flicker. */
+	float fl = 1.0 + (hash11(fseed + 2.1) - 0.5) * flicker * 0.5;
+	col *= fl;
+
+	/* Film grain (updates each frame). */
+	float g = hash21(uv * uv_size + fseed * 13.7) - 0.5;
+	col += g * grain * 0.35;
+
+	/* Drifting vertical scratches. */
+	int sc = (int)scratch_count;
+	for (int i = 0; i < 12; i++) {
+		if (i >= sc)
+			break;
+		float fi = (float)i;
+		float base = hash11(fi * 3.3 + 1.0);
+		float x = base + sin(time * scratch_speed * 1.5 +
+				     fi * 2.0) * 0.08;
+		float d = abs(uv.x - frac(x));
+		float scr = smoothstep(0.0028, 0.0, d);
+		/* flicker each scratch on and off */
+		float on = step(0.35, hash11(fseed * 0.5 + fi * 5.0));
+		col *= 1.0 - scr * scratch_intensity * on;
+	}
+
+	/* Vignette. */
+	float2 dd = v.uv - 0.5;
+	col *= 1.0 - vignette * saturate(dot(dd, dd) * 2.4);
+
+	float3 outc = lerp(src.rgb, saturate(col), strength);
+	return float4(outc, src.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSOldFilm(v);
+	}
+}
