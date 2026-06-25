@@ -1,0 +1,203 @@
+/* Rain on Glass — a port of the WebGL "rain-on-glass-v4" prototype.
+ *
+ * The host (rain.c) runs the CPU particle simulation and builds two dynamic
+ * vertex buffers each frame (drop splats + trail ribbons). This effect holds
+ * three techniques:
+ *
+ *   Splat     — rasterise drop quads into a half-float "height" target.
+ *   Ribbon    — rasterise trail strips into a second height target.
+ *   Composite — sample the parent scene (u_bg) and refract it through the
+ *               height field H = max(hDrop, hTrail), adding spec/fresnel/fog.
+ *
+ * libobs has no MAX blend equation and no instancing, so the two height groups
+ * are drawn additively into separate targets and combined with max() here
+ * (Method A from the porting brief). Only the red channel of the height
+ * targets carries data.
+ */
+
+uniform float4x4 ViewProj;
+
+/* --- height-field rasterisation params --- */
+uniform float u_wobble;       /* drop edge wobble amount (0..1) */
+
+/* --- composite params --- */
+uniform texture2d u_bg;       /* parent scene */
+uniform texture2d u_hdrop;    /* splat height (red) */
+uniform texture2d u_htrail;   /* ribbon height (red) */
+uniform float2 u_res;
+uniform float  u_refr;
+uniform float  u_fog;
+uniform float  u_debug;
+
+sampler_state linClamp {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+/* ===================== drop splats ===================== */
+
+struct SplatIn {
+	float4 pos   : POSITION;
+	float2 local : TEXCOORD0;            /* quad corner -1..1 */
+	float4 spp   : TEXCOORD1;            /* seed, peak, stretch, phase */
+};
+
+struct SplatV {
+	float4 pos   : POSITION;
+	float2 local : TEXCOORD0;
+	float4 spp   : TEXCOORD1;
+};
+
+SplatV VSSplat(SplatIn v)
+{
+	SplatV o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.local = v.local;
+	o.spp = v.spp;
+	return o;
+}
+
+float4 PSSplat(SplatV v) : TARGET
+{
+	float lx = v.local.x, ly = v.local.y;   /* ly>0 head, ly<0 tail */
+	float seed = v.spp.x, peak = v.spp.y, stretch = v.spp.z, phase = v.spp.w;
+
+	float st = clamp(stretch - 1.0, 0.0, 1.4);
+	float tailTaper = lerp(0.9, 0.5, clamp(st / 1.2, 0.0, 1.0));
+	float taper = lerp(1.0, tailTaper, smoothstep(0.0, -1.0, ly));
+	float lxx = lx / max(taper, 0.25);
+	float d = length(float2(lxx, ly));
+	if (d > 1.0)
+		discard;
+	float ang = atan2(ly, lxx);
+	float wob = 1.0 + u_wobble * (0.13 * sin(ang * 3.0 + seed * 6.2831 + phase) +
+				      0.07 * sin(ang * 5.0 - seed * 3.1 - phase * 1.3));
+	float dd = d / clamp(wob, 0.6, 1.45);
+	float fall = pow(smoothstep(1.0, 0.0, dd), 0.72);
+	float headLo = lerp(0.86, 0.4, clamp(st, 0.0, 1.0));
+	float headW = lerp(headLo, 1.0, smoothstep(-0.7, 0.5, ly));
+	float val = peak * fall * headW;
+	return float4(val, 0.0, 0.0, val);
+}
+
+/* ===================== trail ribbons ===================== */
+
+struct RibIn {
+	float4 pos : POSITION;
+	float2 ep  : TEXCOORD0;              /* edge (-1..1), peak */
+};
+
+struct RibV {
+	float4 pos : POSITION;
+	float2 ep  : TEXCOORD0;
+};
+
+RibV VSRibbon(RibIn v)
+{
+	RibV o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.ep = v.ep;
+	return o;
+}
+
+float4 PSRibbon(RibV v) : TARGET
+{
+	float edge = v.ep.x, peak = v.ep.y;
+	float c = 1.0 - edge * edge;          /* rounded tube cross-section */
+	if (c <= 0.0)
+		discard;
+	float val = peak * pow(c, 0.62);
+	return float4(val, 0.0, 0.0, val);
+}
+
+/* ===================== composite ===================== */
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSComp(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float Hat(float2 uv)
+{
+	return max(u_hdrop.Sample(linClamp, uv).r, u_htrail.Sample(linClamp, uv).r);
+}
+
+float4 PSComp(VertData v) : TARGET
+{
+	float2 uv = v.uv;
+	float2 tx = 1.0 / u_res;
+	float H = Hat(uv);
+
+	if (u_debug > 0.5)
+		return float4(saturate(H).xxx, 1.0);
+
+	float e = 1.6;
+	float hL = Hat(uv + float2(-e, 0.0) * tx), hR = Hat(uv + float2(e, 0.0) * tx);
+	float hD = Hat(uv + float2(0.0, -e) * tx), hU = Hat(uv + float2(0.0, e) * tx);
+	float3 n = normalize(float3(hL - hR, hD - hU, 0.07));
+
+	float3 blur = float3(0.0, 0.0, 0.0);
+	float tot = 0.0;
+	for (int i = -2; i <= 2; i++)
+		for (int j = -2; j <= 2; j++) {
+			blur += u_bg.Sample(linClamp,
+				uv + float2(float(i), float(j)) * 2.3 * tx).rgb;
+			tot += 1.0;
+		}
+	blur /= tot;
+
+	float3 glass = lerp(u_bg.Sample(linClamp, uv).rgb, blur,
+			    clamp(u_fog, 0.0, 1.0)) * 0.82;
+
+	float2 roff = n.xy * u_refr * (0.4 + H);
+	float3 refr = u_bg.Sample(linClamp, uv + roff).rgb;
+	float3 inv = u_bg.Sample(linClamp, uv - roff * 1.8).rgb;
+	refr = lerp(refr, inv, clamp(H - 0.5, 0.0, 1.0) * 0.5);
+
+	float3 Ld = normalize(float3(-0.5, 0.6, 0.6));
+	float spec = pow(max(dot(n, Ld), 0.0), 30.0);
+	float fres = pow(1.0 - max(n.z, 0.0), 3.0);
+	float3 drop = refr + spec * 0.9 + fres * 0.22;
+
+	float edge = smoothstep(0.03, 0.09, H) * (1.0 - smoothstep(0.09, 0.22, H));
+	drop *= 1.0 - 0.22 * edge;
+
+	float mask = smoothstep(0.03, 0.12, H);
+	return float4(lerp(glass, drop, mask), 1.0);
+}
+
+technique Splat
+{
+	pass
+	{
+		vertex_shader = VSSplat(v);
+		pixel_shader  = PSSplat(v);
+	}
+}
+
+technique Ribbon
+{
+	pass
+	{
+		vertex_shader = VSRibbon(v);
+		pixel_shader  = PSRibbon(v);
+	}
+}
+
+technique Composite
+{
+	pass
+	{
+		vertex_shader = VSComp(v);
+		pixel_shader  = PSComp(v);
+	}
+}

@@ -15,6 +15,7 @@ void sfx_register_bloom(void);
 void sfx_register_focus(void);
 void sfx_register_crunch(void);
 void sfx_register_glitch(void);
+void sfx_register_rain(void);
 
 bool obs_module_load(void)
 {
@@ -28,6 +29,7 @@ bool obs_module_load(void)
 	sfx_register_focus();
 	sfx_register_crunch();
 	sfx_register_glitch();
+	sfx_register_rain();
 
 	obs_log(LOG_INFO, "screen-effect-tools loaded (version %s)",
 		PLUGIN_VERSION);

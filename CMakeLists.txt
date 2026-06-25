@@ -43,6 +43,7 @@ target_sources(
     src/filters/focus.c
     src/filters/crunch.c
     src/filters/glitch.c
+    src/filters/rain.c
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
