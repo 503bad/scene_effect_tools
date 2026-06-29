@@ -1,0 +1,83 @@
+/* Inner Glow - glow that hugs the inside of the subject's alpha edge and fades
+ * inward. Stays within the source bounds (never spills outside). Passes:
+ * Extract (alpha), Blur(H), Blur(V), Composite. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;     /* Extract/Blur input. Composite: source         */
+uniform texture2d glow_tex;  /* Composite: blurred alpha                       */
+
+uniform float4 glow_color;   /* rgb tint                                       */
+uniform float  spread;       /* 0..1 choke (solid core before falloff)         */
+uniform float2 blur_dir;     /* uv-space full radius                           */
+uniform float  opacity;      /* 0..1 glow opacity (blink applied on CPU)       */
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv  = v.uv;
+	return o;
+}
+
+/* --- Extract: just the source alpha (in every channel) ---------------- */
+float4 PSExtract(VertData v) : TARGET
+{
+	float a = image.Sample(def_sampler, v.uv).a;
+	return float4(a, a, a, a);
+}
+
+/* --- Blur: separable gaussian across the full radius ------------------ */
+float4 PSBlur(VertData v) : TARGET
+{
+	float sigma = 0.5;
+	float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	for (int i = -16; i <= 16; i++) {
+		float x = (float)i / 16.0;
+		float w = exp(-(x * x) / (2.0 * sigma * sigma));
+		sum += image.Sample(def_sampler, v.uv + blur_dir * x) * w;
+		wsum += w;
+	}
+	return sum / wsum;
+}
+
+/* --- Composite: light up the inside band near the edge ----------------
+ * inside the subject (base.a high) but close to the edge (blurred alpha < 1)
+ * => positive band that fades inward over the blur radius. */
+float4 PSComposite(VertData v) : TARGET
+{
+	float4 base = image.Sample(def_sampler, v.uv);
+	float blurredA = glow_tex.Sample(def_sampler, v.uv).a;
+
+	/* Spread chokes the inward falloff so the band can stay solid further in. */
+	float band = saturate((1.0 - blurredA) / max(1.0 - spread, 1e-3));
+	float inner = base.a * band * opacity;
+	float3 rgb = base.rgb + glow_color.rgb * inner;
+	return float4(rgb, base.a);
+}
+
+technique Extract
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSExtract(v); }
+}
+
+technique Blur
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSBlur(v); }
+}
+
+technique Composite
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSComposite(v); }
+}

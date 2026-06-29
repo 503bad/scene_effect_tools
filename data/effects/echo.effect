@@ -1,0 +1,80 @@
+/* Echo / Afterimage - temporal accumulation.
+ *   Accum:   trail = max(prev * decay, cur * opacity [only when injecting])
+ *   Combine: draw the live frame over the colour-tinted trail.
+ * Driven by C with a persistent ping-pong accumulation buffer. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;         /* current frame                            */
+uniform texture2d prev;          /* previous accumulation (Accum)            */
+uniform texture2d echo;          /* new accumulation / trail (Combine)       */
+
+uniform float  decay;            /* per-frame fade multiplier 0..1           */
+uniform float  opacity;          /* max trail density 0..1                   */
+uniform float  inject;           /* 1 = capture cur into the trail this frame*/
+uniform float4 color_overlay;    /* rgba tint applied to the trail           */
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv  = v.uv;
+	return o;
+}
+
+/* --- Accum: fade the old trail, optionally inject the current frame --- */
+float4 PSAccum(VertData v) : TARGET
+{
+	float4 c = image.Sample(def_sampler, v.uv);
+	float4 p = prev.Sample(def_sampler, v.uv);
+
+	/* faded existing trail */
+	float4 trail = p * decay;
+
+	/* current frame as an echo source, capped at opacity */
+	float4 inj = float4(c.rgb, c.a) * opacity * inject;
+
+	/* keep whichever is brighter so trails build then fade */
+	float4 outv;
+	outv.rgb = max(trail.rgb, inj.rgb);
+	outv.a = max(trail.a, inj.a);
+	return outv;
+}
+
+/* --- Combine: live frame over the tinted trail ------------------------ */
+float4 PSCombine(VertData v) : TARGET
+{
+	float4 cur = image.Sample(def_sampler, v.uv);
+	float4 tr = echo.Sample(def_sampler, v.uv);
+
+	/* tint the trail toward the overlay colour by its alpha */
+	float3 trailRgb = lerp(tr.rgb, color_overlay.rgb, color_overlay.a);
+	float trailA = tr.a;
+
+	/* composite live frame over the trail (straight alpha) */
+	float outA = cur.a + trailA * (1.0 - cur.a);
+	float3 outRgb = cur.rgb * cur.a + trailRgb * trailA * (1.0 - cur.a);
+	outRgb /= max(outA, 1e-4);
+
+	return float4(outRgb, outA);
+}
+
+technique Accum
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSAccum(v); }
+}
+
+technique Combine
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSCombine(v); }
+}

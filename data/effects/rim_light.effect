@@ -1,0 +1,75 @@
+/* Rim Light - directional light along the alpha contour of a 2D source.
+ * Single pass. The alpha gradient is the contour normal; rim = dot(n, dir). */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float4 light_color;  /* rgb tint, a unused                         */
+uniform float  intensity;    /* 0..4 (blink already applied on CPU)         */
+uniform float  opacity;      /* 0..1 overall rim opacity                    */
+uniform float  rim_width;    /* 0..1 reach/spread of the light              */
+uniform float  softness;     /* 0..1 edge softness (falloff curve)          */
+uniform float2 light_dir;    /* unit vector (cos a, sin a)                  */
+uniform float2 resolution;   /* source px size                             */
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv  = v.uv;
+	return o;
+}
+
+float4 PSRim(VertData v) : TARGET
+{
+	float4 base = image.Sample(def_sampler, v.uv);
+	float origA = base.a;
+
+	/* Width in pixels. rim_width == 1 spans the largest source dimension,
+	 * so the light can reach across the whole subject. */
+	float maxDim = max(resolution.x, resolution.y);
+	float width_px = max(rim_width * maxDim, 1.0);
+	float2 texel = 1.0 / max(resolution, float2(1.0, 1.0));
+
+	/* March toward the light. Pixels near the lit edge leave the silhouette
+	 * after a short distance, so they accumulate more "outside" and read
+	 * brighter; deep-interior pixels only light up as the width grows. */
+	float lit = 0.0;
+	for (int i = 1; i <= 24; i++) {
+		float t = (float)i / 24.0;
+		float2 o = light_dir * texel * (width_px * t);
+		float a = image.Sample(def_sampler, v.uv + o).a;
+		lit += (1.0 - a);
+	}
+	lit /= 24.0; /* 0..1 fraction of the marched path that is outside */
+
+	/* Softness shapes the falloff: low softness -> tight, high-contrast
+	 * rim hugging the lit edge; high softness -> broad, gentle gradient. */
+	float expo = lerp(3.0, 0.4, saturate(softness));
+	float shaped = pow(saturate(lit), expo);
+
+	/* Only opaque pixels light up; transparent areas stay untouched. */
+	float rim = saturate(origA * shaped * intensity) * opacity;
+	base.rgb += light_color.rgb * rim;
+	return base;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSRim(v);
+	}
+}

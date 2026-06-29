@@ -1,0 +1,83 @@
+/* Outer Glow - extract alpha mask, separable gaussian blur, tint, add outside
+ * the subject. Driven by C in 4 passes: Extract, Blur(H), Blur(V), Composite. */
+
+uniform float4x4 ViewProj;
+uniform texture2d image;     /* Extract/Blur: stage input. Composite: source */
+uniform texture2d glow_tex;  /* Composite: the blurred, tinted glow           */
+
+uniform float4 glow_color;   /* rgb tint                                      */
+uniform float  spread;       /* 0..3 density: pushes the solid core outward   */
+uniform float2 blur_dir;     /* uv-space step for the full blur radius        */
+uniform float  opacity;      /* 0..1 glow opacity (blink applied on CPU)      */
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv  = v.uv;
+	return o;
+}
+
+/* --- Extract: plain alpha mask (colour/shape applied in GlowOut) ------ */
+float4 PSExtract(VertData v) : TARGET
+{
+	float a = image.Sample(def_sampler, v.uv).a;
+	return float4(a, a, a, a);
+}
+
+/* --- Blur: separable gaussian sampled uniformly across the full radius.
+ * blur_dir is the FULL radius in uv space, so the glow actually reaches the
+ * requested px count (taps span [-radius, +radius]). ------------------- */
+float4 PSBlur(VertData v) : TARGET
+{
+	float sigma = 0.5; /* relative to the radius; ~13% weight at the edge */
+	float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	for (int i = -16; i <= 16; i++) {
+		float x = (float)i / 16.0; /* -1..1 */
+		float w = exp(-(x * x) / (2.0 * sigma * sigma));
+		sum += image.Sample(def_sampler, v.uv + blur_dir * x) * w;
+		wsum += w;
+	}
+	return sum / wsum;
+}
+
+/* --- GlowOut: lay the blurred, tinted glow onto the padded canvas. The
+ * original source is drawn on top afterwards (separate pass on the C side),
+ * so this only needs to emit the glow itself. ------------------------- */
+float4 PSGlowOut(VertData v) : TARGET
+{
+	float m = glow_tex.Sample(def_sampler, v.uv).a;
+	/* Density: scale the blurred mask so the solid core is pushed further out
+	 * before it fades. A multiply (not 1/(1-spread)) so it keeps intensifying
+	 * smoothly past 100% instead of saturating. Resolution-independent. */
+	float g = saturate(m * (1.0 + spread));
+	float a = g * opacity;
+	return float4(glow_color.rgb * a, a);
+}
+
+technique Extract
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSExtract(v); }
+}
+
+technique Blur
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSBlur(v); }
+}
+
+technique GlowOut
+{
+	pass { vertex_shader = VSDefault(v); pixel_shader = PSGlowOut(v); }
+}

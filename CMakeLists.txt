@@ -33,6 +33,7 @@ target_sources(
     src/plugin-main.c
     src/sfx-common.c
     src/sfx-render.c
+    src/set-fx.c
     src/filters/sepia.c
     src/filters/cartoon.c
     src/filters/pixel-art.c
@@ -44,6 +45,10 @@ target_sources(
     src/filters/crunch.c
     src/filters/glitch.c
     src/filters/rain.c
+    src/filters/set-rim-light.c
+    src/filters/set-glow.c
+    src/filters/set-inner-glow.c
+    src/filters/set-echo.c
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
@@ -88,6 +93,7 @@ install(
   FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
         "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
         "${CMAKE_CURRENT_SOURCE_DIR}/dist/SOURCE-NOTICE.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/install.bat"
   DESTINATION .
   COMPONENT dist
 )
