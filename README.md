@@ -1,19 +1,57 @@
 # Screen Effect Tools
 
+> **📥 最新版のダウンロード：[release.zip（Windows x64）](https://github.com/503bad/scene_effect_tools/releases/latest/download/release.zip)**
+> ／ [リリースページ（更新内容）](https://github.com/503bad/scene_effect_tools/releases/latest)
+>
+> 展開した `install.bat` をダブルクリックするとインストールできます（詳しくは「[OBS へのインストール](#obs-へのインストール)」）。
+
 OBS Studio 用の映像エフェクト・フィルタープラグインです。映像ソースに右クリック →
 「フィルタ」から追加できる10種類のエフェクトフィルターを提供します。各フィルターは
 独立しており、自由に重ねがけ（スタック）・順序入替できます（例：ドット絵 → グリッチ）。
 
 ## OBS へのインストール
 
-OBS を終了した状態で以下のファイルを OBS のインストール先に配置してください:
+### インストーラーを使う（推奨）
 
-- `bin/` 配下のファイルすべて → `<obs>/obs-plugins/64bit/` 配下へ
-- `screen-effect-tools/` フォルダ → `<obs>/data/obs-plugins/` 配下へフォルダごとコピー
+1. OBS を完全に終了します。
+2. ZIP をすべて展開し、`install.bat` を**ダブルクリック**します。管理者権限の確認（UAC）が出たら「はい」を選ぶと、新しいウィンドウでインストールが進みます。
 
-（`<obs>` は OBS のインストール先。例: `C:\Program Files\obs-studio`。）配置後は
-OBS を完全に再起動してください。`build.bat` を管理者権限で実行すると、ビルドから
-ローカル OBS への配置まで自動で行います。
+`install.bat` は次のことを自動で行います。
+
+- `C:\ProgramData\obs-studio\plugins\screen-effect-tools\` に、DLL を
+  **OBS 33 以降の置き方と OBS 32 以前の置き方の両方**で配置します。OBS のバージョンに
+  関係なく読み込まれ、32 から 33 へ更新したあともそのまま使えます
+  （OBS 33 は新しい置き方を先に読み込み、もう一方は読み飛ばします）。
+  - `...\screen-effect-tools\screen-effect-tools.dll`（OBS 33 以降）
+  - `...\screen-effect-tools\bin\64bit\screen-effect-tools.dll`（OBS 32 以前）
+  - `...\screen-effect-tools\data\`
+- OBS の場所（レジストリ → `C:\Program Files\obs-studio`）は、古いコピーの削除と
+  ポータブル版の判定にだけ使います。見つからなくてもインストールは続けます。
+  - **ポータブル版 OBS 33 以降**は `install.bat "D:\Apps\obs-studio"` のように
+    OBS のフォルダを指定してください（`<OBS のフォルダ>\plugins\screen-effect-tools\` に入ります。
+    ポータブル版 OBS 32 以前はインストーラーの対象外です）。
+- 以前のバージョンが旧方式の場所（`<OBS>\obs-plugins\64bit\` と
+  `<OBS>\data\obs-plugins\screen-effect-tools\`）にあれば削除します。
+  旧方式の場所は OBS 34 以降で読み込まれなくなる予定です。
+- 以前のバージョンの不要なファイル（古いエフェクトなど）も削除します。
+
+インストールのたびに、`install.bat` と同じフォルダへ `install-log.txt`（見つけた OBS・
+インストール先・PC にあるプラグインの DLL の一覧）を書き出します。うまく動かないときは
+このファイルと OBS のログを添えてお知らせください。`install.bat /check` を実行すると、
+何も変更せずにインストール先などを画面に表示します（管理者権限は不要です）。
+
+### 手動でインストールする
+
+OBS を終了し、ZIP の中の `screen-effect-tools` フォルダを次の場所にフォルダごと
+コピーします。フォルダ名は必ず `screen-effect-tools`（DLL のベース名と一致）にします。
+
+- `C:\ProgramData\obs-studio\plugins\` の中へそのままコピーし、さらに
+  `screen-effect-tools.dll` と `screen-effect-tools.pdb` を `screen-effect-tools\bin\64bit\`
+  にもコピーします（両方に置くと OBS 32 / 33 のどちらでも読み込まれます）
+
+以前に `C:\Program Files\obs-studio\obs-plugins\64bit\screen-effect-tools.dll` と
+`C:\Program Files\obs-studio\data\obs-plugins\screen-effect-tools\` に入れていた
+場合は、それらを削除してください。
 
 ## エフェクト一覧
 
@@ -49,8 +87,8 @@ build.bat clean      build_x64\ と package\ を消してフルビルド
 ```
 
 初回 configure 時に `buildspec.json` 記載の OBS ソース／prebuilt deps を `.deps\` へ
-ダウンロードします。OBS への配置は `C:\Program Files` への書き込みになるため、
-管理者権限のコマンドプロンプトから実行してください。
+ダウンロードします。OBS への配置は `package\install.bat` で `C:\ProgramData\obs-studio\plugins\` に
+書き込むため、管理者権限のコマンドプロンプトから実行してください。
 
 ## 既知の制限
 
